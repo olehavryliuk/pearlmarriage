@@ -1,0 +1,442 @@
+<!--Author Oleh Havryliuk 03.2017-->
+
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Pearl Marriage</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+        
+        <style>
+            body {
+                background: #000000;
+                padding: 0;
+                margin: 0;
+                overflow: hidden;
+            }
+            h1 {
+                color: #ffffff;
+                position: absolute;
+                top: 50%;
+                width: 100%;
+                text-align: center;
+            }
+        </style>                
+    </head>
+    
+    <body>
+        <div>
+            <h1 id="loading">Loading...</h1>
+        </div>
+    
+        <div id="Stats-output">
+        </div>
+        
+        <script src="libs/three.js"></script>
+        <script src="libs/stats.min.js"></script>
+        <script src="libs/OrbitControls.js"></script>
+        <script>
+            function pearlMarriage()
+            {
+            //Constants
+                var butterflyCount = 300,
+                    butterflyMaterialCount = 10,
+                    itemsToLoad = 5,
+                    angleVelocity = 0.8,
+                    innerRadius = 1.8,
+                    outerRadius = 7,
+                    maxRadiusDispersion = 1,
+                    maxManeuverTime = 3,
+                    minManeuverTime = 0,
+                    maxVelocity = 1,
+                    reflectionUpdateLoopInterval = 100,
+                    reflectionStopUpdateTime = 12000,
+                    forwardVector = new THREE.Vector3(0, 0, -1),
+                    centerDisplacement = new THREE.Vector3(0, -1, 0),
+                    shellAngleSpeed = 0.1,
+                    shellFinishAngle = Math.PI / 3,
+                    shellOpenTime = 6.5,
+                    audioPath = "music/PaulMauriat_EbbTide";
+                    butterflyColors = [
+                        0xfff600,
+                        0xff7800,
+                        0x5aff00,
+                        0x00ffe4,
+                        0xff0096,
+                        0xff290d,
+                        0x12ae30,
+                        0x986aff,
+                        0xffa9fd,
+                        0xd8ff00
+                    ];
+
+            //three.js scene and stats
+                var container,
+                    camera,
+                    cubeCameraLeft,
+                    cubeCameraRight,
+                    scene, 
+                    renderer,
+                    loader,
+                    itemsLoadedCount = 0,
+                    shellCurrentAngle = 0,
+                    timePassed = 0,
+                    reflectionUpdateTime,
+                    clock,
+                    animationMixer,
+                    stats,
+                    orbit,
+                    audio;
+                
+            //Meshes and objects
+                var shellTop,
+                    shellBottom,
+                    leftPearl,
+                    rightPearl,
+                    heart,
+                    butterflies = [];
+            
+            /** @constructor */
+                var Butterfly = function(geometry, material)
+                {
+                    this.mesh = new THREE.SkinnedMesh(geometry, material);
+                    this.mesh.scale.x = this.mesh.scale.y = this.mesh.scale.z = 0.1;
+                    this.innerRadius = innerRadius + Math.random() * maxRadiusDispersion;
+                    this.outerRadius = outerRadius + Math.random() * maxRadiusDispersion;
+                    
+                    var x, y, z;
+                        
+                    do
+                    {
+                        x = (Math.random() * 2 - 1) * this.outerRadius;
+                        y = (Math.random() * 2 - 1) * this.outerRadius;
+                        z = (Math.random() * 2 - 1) * this.outerRadius;
+                    }
+                    while (x * x + y * y + z * z <= this.innerRadius * this.innerRadius ||
+                           x * x + y * y + z * z >= this.outerRadius * this.outerRadius);
+                    
+                    this.mesh.position.set(x, y, z);
+
+                    this.velocity = new THREE.Vector3((Math.random() * 2 - 1) * maxVelocity,
+                                                      (Math.random() * 2 - 1) * maxVelocity,
+                                                      (Math.random() * 2 - 1) * maxVelocity);
+                    this.mesh.quaternion.setFromUnitVectors(forwardVector, this.velocity.clone().normalize());
+                    this.isRotating = false;
+                    this.rotationAxis = new THREE.Vector3(1, 0, 0);
+                    this.maneuverCurrentTime = 0;
+                    this.maneuverFinishTime = Math.random() * maxManeuverTime / 2;
+                }
+                
+                Butterfly.prototype.updatePosition = function(deltaTime)
+                {
+                    var velocity = this.velocity.clone().multiplyScalar(deltaTime),
+                        newPosition = new THREE.Vector3();
+                        
+                    newPosition.addVectors(this.mesh.position, velocity);  
+                
+                //don't move if newPosition is not in bounding sphere diff
+                    var squareSum = newPosition.x * newPosition.x + newPosition.y * newPosition.y + newPosition.z * newPosition.z;
+                        
+                    if (squareSum < this.outerRadius * this.outerRadius && squareSum > this.innerRadius * this.innerRadius)
+                    {
+                        this.mesh.position.copy(newPosition);
+                    }
+                
+                    if (this.isRotating)
+                    {
+                        this.velocity.applyAxisAngle(this.rotationAxis, angleVelocity * deltaTime); 
+                        this.mesh.quaternion.setFromUnitVectors(forwardVector, this.velocity.clone().normalize());
+                    }
+                    
+                    this.maneuverCurrentTime += deltaTime;
+                    
+                    if (this.maneuverCurrentTime >= this.maneuverFinishTime)
+                    {
+                        this.maneuverCurrentTime = 0;
+                        this.maneuverFinishTime = minManeuverTime + Math.random() * (maxManeuverTime - minManeuverTime);
+                        
+                        this.isRotating = Math.random() >= 0.5;
+                        this.rotationAxis = (new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5)).normalize();
+                    }
+                }
+                
+                function init()
+                {
+                    container = document.createElement("div");
+                    document.body.appendChild(container);
+                    
+                    stats = initStats();
+                    
+                    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 10000);
+                    camera.position.z = 7;
+                    camera.position.y = 3;
+                    camera.position.x = -2;
+                    
+                    orbit = new THREE.OrbitControls(camera);
+                    orbit.center = centerDisplacement;
+                    
+                    scene = new THREE.Scene();
+                    
+                    animationMixer = new THREE.AnimationMixer();
+                    
+                //Load Heart
+                    loader = new THREE.JSONLoader();
+                    loader.setTexturePath("textures/");
+                    
+                    loader.load("models/SweetHeart.min.json", function(geometry, materials)
+                    {
+                        heart = new THREE.Mesh(geometry, materials[0]);
+                        heart.scale.x = heart.scale.y = heart.scale.z = 0.15;
+                        heart.position.y = 0.4 + centerDisplacement.y;
+                        heart.castShadow = true;
+                        //heart.receiveShadow = true;
+                                
+                        scene.add(heart);
+                        
+                        itemLoaded();
+                    });
+
+                //Shell
+                    loader.load("models/ShellHalf.min.json", function (geometry, materials)
+                    {
+                        shellBottom = new THREE.Mesh(geometry, materials[0]);
+                        shellTop = new THREE.Mesh(geometry, materials[0]);
+                        
+                        shellBottom.scale.x = shellBottom.scale.y = shellBottom.scale.z =
+                        shellTop.scale.x = shellTop.scale.y = shellTop.scale.z = 1.5;
+                        shellTop.position.z = shellBottom.position.z = -1.45;
+                        shellTop.position.y = shellBottom.position.y = 0.15 + centerDisplacement.y;
+                        shellTop.rotateOnAxis(new THREE.Vector3(0, 0, 1), Math.PI);
+                        shellBottom.castShadow = shellTop.castShadow = true;
+                        shellBottom.receiveShadow = shellTop.receiveShadow = true;
+                        
+                        scene.add(shellBottom);
+                        scene.add(shellTop);
+                        
+                        itemLoaded();
+                    });
+ 
+                //Butterfly
+                    loader.setTexturePath("textures/");
+                    loader.load("models/Butterfly.min.json", function (geometry, materials)
+                    {
+                        var material = materials[0],
+                            newMaterial,
+                            materialNumber = 0,
+                            butterflyMaterials = [],
+                            butterfly,
+                            time;
+                            
+                        material.skinning = true;
+                        material.alphaTest = 0.5;
+                        material.shininess = 10.0;
+                        
+                        var clip = geometry.animations[0];
+                        
+                        for (var i = 0; i < butterflyMaterialCount; i++)
+                        {
+                            newMaterial = new THREE.MeshPhongMaterial();
+                            newMaterial.copy(material);
+                            newMaterial.color = new THREE.Color(butterflyColors[i]);
+                            butterflyMaterials.push(newMaterial);
+                        }
+                        
+                        for (i = 0; i < butterflyCount; i++)
+                        {  
+                            butterfly = new Butterfly(geometry, butterflyMaterials[materialNumber]);
+                            butterflies.push(butterfly);
+                            scene.add(butterfly.mesh);
+                            
+                            materialNumber++;
+                            if (materialNumber >= butterflyMaterialCount)
+                                materialNumber = 0;
+                            
+                            var action = animationMixer.clipAction(clip, butterfly.mesh);
+                            action.setLoop(THREE.LoopPingPong);
+
+                            setTimeout(action.play.bind(action), Math.random() * 1000);
+                        }
+                        
+                        itemLoaded();
+                    });
+ 
+                //Pearls                
+                    var path = "textures/skybox/";
+                    var format = '.jpg';
+                    var urls = [
+                        path + 'px' + format, path + 'nx' + format,
+                        path + 'py' + format, path + 'ny' + format,
+                        path + 'pz' + format, path + 'nz' + format
+                    ];
+                    
+                    var textureCube = new THREE.CubeTextureLoader().load(urls, itemLoaded);
+
+                    cubeCameraLeft = new THREE.CubeCamera(0.1, 20000, 256);
+                    cubeCameraRight = new THREE.CubeCamera(0.1, 20000, 256);
+                    scene.add(cubeCameraLeft);
+                    scene.add(cubeCameraRight);
+
+                    var sphereGeometry = new THREE.SphereGeometry(0.29, 32, 16);
+                    var pearlLeftMaterial = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 0.3, reflectivity: 0.65, envMap: cubeCameraLeft.renderTarget});
+                    var pearlRightMaterial = new THREE.MeshPhongMaterial({color: 0xffffff, shininess: 0.3, reflectivity: 0.65, envMap: cubeCameraRight.renderTarget});
+                    leftPearl = new THREE.Mesh(sphereGeometry, pearlLeftMaterial);
+                    rightPearl = new THREE.Mesh(sphereGeometry, pearlRightMaterial);
+                    
+                    leftPearl.position.set(-0.26 + centerDisplacement.x, centerDisplacement.y, centerDisplacement.z);
+                    rightPearl.position.set(0.26 + centerDisplacement.x, centerDisplacement.y, centerDisplacement.z);
+                    
+                    cubeCameraLeft.position.copy(leftPearl.position);
+                    cubeCameraRight.position.copy(rightPearl.position);
+                    
+                    leftPearl.castShadow = rightPearl.castShadow = true;
+                    //rightPearl.receiveShadow = leftPearl.receiveShadow = true;
+                    
+                    scene.add(leftPearl);
+                    scene.add(rightPearl);
+
+                //Skybox
+                    var shader = THREE.ShaderLib.cube;
+                    shader.uniforms.tCube.value = textureCube;
+
+                    var skyboxMaterial = new THREE.ShaderMaterial({
+                        fragmentShader: shader.fragmentShader,
+                        vertexShader: shader.vertexShader,
+                        uniforms: shader.uniforms,
+                        side: THREE.BackSide
+                    }),
+
+                    skyboxMesh = new THREE.Mesh(new THREE.BoxGeometry(10000, 10000, 10000), skyboxMaterial);
+                    scene.add(skyboxMesh);
+                    
+                //Lights
+                    scene.add(new THREE.AmbientLight(0x656565));
+                    
+                    var directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+                    directionalLight.position.set(-1, 1, 2);
+                    //directionalLight.shadowMapSize = new THREE.Vector2(2048, 2048);
+                    directionalLight.castShadow = true;
+                    scene.add(directionalLight);
+                    
+                //Renderer
+                    renderer = new THREE.WebGLRenderer({antialias: true});
+                    renderer.setPixelRatio(window.devicePixelRatio ? window.devicePixelRatio : 1);
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                    //renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                    renderer.shadowMap.enabled = true;
+                    container.appendChild(renderer.domElement);
+                
+                //Audio
+                    audio = document.createElement("audio");
+                    document.body.appendChild(audio);
+                    
+                    if (audio.canPlayType("audio/mpeg"))
+                        audio.src = audioPath + ".mp3";
+                    else
+                        audio.src = audioPath + ".ogg";
+                    
+                    audio.preload = "auto";
+                    audio.loop = true;
+                    audio.addEventListener("canplaythrough", itemLoaded, false);
+                
+                //Clock
+                    clock = new THREE.Clock();
+
+                //Resize event
+                    window.addEventListener('resize', onWindowResize, false);
+                }
+
+                function onWindowResize() {
+
+                    windowHalfX = window.innerWidth / 2,
+                    windowHalfY = window.innerHeight / 2,
+
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+
+                    renderer.setSize( window.innerWidth, window.innerHeight );
+                }
+                
+                function itemLoaded()
+                {
+                    itemsLoadedCount++;
+
+                    if (itemsLoadedCount >= itemsToLoad)
+                    {
+                        var node = document.getElementById("loading");
+                        node.parentNode.removeChild(node);
+                    
+                        audio.removeEventListener("canplaythrough", itemLoaded, false);
+                        audio.play();
+                    
+                        reflectionUpdateTime = 0;
+                        
+                        setTimeout(updateCubeMap, reflectionUpdateLoopInterval, true);
+                        
+                        animate();
+                    }
+                }
+
+                function updateCubeMap(left)
+                {
+                    if (left)
+                        cubeCameraLeft.updateCubeMap(renderer, scene);
+                    else
+                        cubeCameraRight.updateCubeMap(renderer, scene);
+                    
+                    if (reflectionUpdateTime <= reflectionStopUpdateTime)
+                    {
+                        setTimeout(updateCubeMap, reflectionUpdateLoopInterval, !left);
+                        reflectionUpdateTime += reflectionUpdateLoopInterval;
+                    }
+                }               
+               
+                function initStats()
+                {
+                    var stats = new Stats();
+                    stats.setMode(0); // 0: fps, 1: ms
+
+                    // Align top-left
+                    stats.domElement.style.position = 'absolute';
+                    stats.domElement.style.left = '0px';
+                    stats.domElement.style.top = '0px';
+
+                    document.getElementById("Stats-output").appendChild(stats.domElement);
+
+                    return stats;
+                }
+                
+                function animate()
+                {
+                    requestAnimationFrame(animate);
+                    
+                    var deltaTime = clock.getDelta();
+                    timePassed += deltaTime;
+                    
+                    for (var i = 0; i < butterflyCount; i++)
+                    {
+                        butterflies[i].updatePosition(deltaTime);
+                    }
+                    
+                    if (shellCurrentAngle < shellFinishAngle && timePassed >= shellOpenTime)
+                    {
+                        var shellAngleDelta = shellAngleSpeed * deltaTime;
+                        shellCurrentAngle += shellAngleDelta;
+                        shellTop.rotateOnAxis(new THREE.Vector3(1, 0, 0), shellAngleDelta);
+                    }
+                    
+                    animationMixer.update(deltaTime);
+                    
+                    stats.update();
+                    
+                    orbit.update();
+                    
+                    renderer.render(scene, camera);
+                }
+                
+                init();
+            }
+
+            pearlMarriage();
+        </script>
+    </body>
+</html>
